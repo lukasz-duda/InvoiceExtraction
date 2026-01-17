@@ -1,9 +1,10 @@
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Route("invoices")]
-public class InvoiceController : ControllerBase
+public class InvoiceController(IInvoiceAnalyzer invoiceAnalyzer) : ControllerBase
 {
     private static List<Invoice> _invoices = new();
 
@@ -22,13 +23,19 @@ public class InvoiceController : ControllerBase
 
         using var memoryStream = new MemoryStream();
         await file.CopyToAsync(memoryStream);
+        byte[] fileContent = memoryStream.ToArray();
 
-        _invoices.Add(new Invoice
+        Invoice? invoice = await invoiceAnalyzer.ExtractInvoiceAsync(fileContent);
+
+        if (invoice != null)
         {
-            FileName = file.FileName,
-            Content = memoryStream.ToArray()
-        });
-        return Ok();
+            _invoices.Add(invoice);
+            return Ok();
+        }
+        else
+        {
+            return NotFound();
+        }
     }
 
     [HttpGet]
@@ -36,10 +43,4 @@ public class InvoiceController : ControllerBase
     {
         return Ok(_invoices.ToArray());
     }
-}
-
-class Invoice
-{
-    public required string FileName { get; set; }
-    public required byte[] Content { get; set; }
 }
