@@ -39,6 +39,6 @@ dotnet run
 Start invoices API http://localhost:5120:
 
 ```bash
-cd api
+cd invoices/api
 dotnet run
 ```
