@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Invoices;
 using Microsoft.Extensions.AI;
 using OllamaSharp;
 using UglyToad.PdfPig;
@@ -7,12 +8,6 @@ using UglyToad.PdfPig;
 public interface IInvoiceAnalyzer
 {
     Task<Invoice?> ExtractInvoiceAsync(byte[] content);
-}
-
-public class Invoice
-{
-    public required string PdfText { get; set; }
-    public required string Json { get; set; }
 }
 
 class InvoiceAnalyzer : IInvoiceAnalyzer
