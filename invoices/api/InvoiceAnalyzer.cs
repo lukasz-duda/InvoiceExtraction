@@ -1,88 +1,128 @@
 using System.Text;
 using System.Text.Json;
 using Invoices;
-using Microsoft.Extensions.AI;
-using OllamaSharp;
 using UglyToad.PdfPig;
 
 public interface IInvoiceAnalyzer
 {
-    Task<Invoice?> ExtractInvoiceAsync(byte[] content);
+  Task<Invoice?> ExtractInvoiceAsync(byte[] content);
 }
 
 class InvoiceAnalyzer : IInvoiceAnalyzer
 {
-    public async Task<Invoice?> ExtractInvoiceAsync(byte[] content)
+  public async Task<Invoice?> ExtractInvoiceAsync(byte[] content)
+  {
+    var pdfText = ExtractPdfText(content);
+    var invoice = await ExtractInvoiceJson(pdfText);
+    return invoice;
+  }
+
+  public static string ExtractPdfText(byte[] content)
+  {
+    var sb = new StringBuilder();
+
+    using var pdf = PdfDocument.Open(content);
+
+    foreach (var page in pdf.GetPages())
+      sb.AppendLine(page.Text);
+
+    return sb.ToString();
+  }
+
+  public async Task<Invoice?> ExtractInvoiceJson(string invoiceText)
+  {
+    using var http = new HttpClient
     {
-        var pdfText = ExtractPdfText(content);
-        var invoice = await ExtractInvoiceJson(pdfText);
-        return invoice;
-    }
+      BaseAddress = new Uri("http://localhost:11434")
+    };
 
-    public static string ExtractPdfText(byte[] content)
+    http.Timeout = TimeSpan.FromMinutes(5);
+
+    var systemPrompt = """
+You are a deterministic JSON extraction engine.
+Return valid JSON only.
+Do not include explanations or markdown.
+
+Return JSON exactly matching this schema:
+
+{
+  "invoiceNumber": string | null,
+  "issueDate": string | null,
+  "saleDate": string | null,
+  "seller": {
+    "name": string | null,
+    "address": string | null,
+    "nip": string | null
+  } | null,
+  "buyer": {
+    "name": string | null,
+    "address": string | null,
+    "nip": string | null
+  } | null,
+  "items": [
     {
-        var sb = new StringBuilder();
-
-        using var pdf = PdfDocument.Open(content);
-
-        foreach (var page in pdf.GetPages())
-            sb.AppendLine(page.Text);
-
-        return sb.ToString();
+      "name": string | null,
+      "quantity": number,
+      "unit": string | null,
+      "netPrice": number | null,
+      "netValue": number | null,
+      "vatRate": string | null,
+      "vatValue": number | null,
+      "grossValue": number | null
     }
+  ] | null,
+  "totals": {
+    "netTotal": number | null,
+    "vatTotal": number | null,
+    "grossTotal": number | null
+  } | null
+}
 
-    public async Task<Invoice?> ExtractInvoiceJson(string invoiceText)
+Use null when a value is missing.
+Do not add extra fields.
+""";
+
+    var requestBody = new
     {
-        IChatClient chatClient = new OllamaApiClient("http://localhost:11434", "SpeakLeash/bielik-11b-v3.0-instruct:Q4_K_M");
+      model = "SpeakLeash/bielik-11b-v3.0-instruct:Q4_K_M",
+      messages = new[]
+        {
+            new { role = "system", content = systemPrompt },
+            new { role = "user", content = invoiceText }
+        },
+      format = "json",
+      stream = false
+    };
 
-        var prompt = $@"
-Oto treść faktury:
+    var response = await http.PostAsync(
+        "/api/chat",
+        new StringContent(
+            JsonSerializer.Serialize(requestBody),
+            Encoding.UTF8,
+            "application/json"
+        )
+    );
 
-{invoiceText}
+    response.EnsureSuccessStatusCode();
 
-Wyodrębnij dane.
+    var responseJson = await response.Content.ReadAsStringAsync();
 
-Zwróć wynik w formacie JSON:
-{{
-  ""invoiceNumber"": "",
-  ""issueDate"": "",
-  ""saleDate"": "",
-  ""seller"":
-  {{
-    ""name"": "",
-    ""address"": "",
-    ""nip"": ""
-  }},
-  ""buyer"":
-  {{
-    ""name"": "",
-    ""address"": "",
-    ""nip"": ""
-  }},
-  ""items"": [
-    {{
-      ""name"": "",
-      ""quantity"": 0,
-      ""unit"": "",
-      ""netPrice"": 0.0,
-      ""netValue"": 0.0,
-      ""vatRate"": "",
-      ""vatValue"": 0.0,
-      ""grossValue"": 0.0
-    }}
-  ],
-  ""totals"":
-  {{
-    ""netTotal"": 0.0,
-    ""vatTotal"": 0.0,
-    ""grossTotal"": 0.0
-  }}
-}}
+    using var doc = JsonDocument.Parse(responseJson);
 
-Jeśli nie znajdziesz jakiejś wartości, wpisz null.";
+    var content = doc.RootElement
+        .GetProperty("message")
+        .GetProperty("content")
+        .GetString();
 
-        var chatMessage = new ChatMessage(ChatRole.User, prompt);
-        var chatResponse = await chatClient.GetResponseAsync(chatMessage);
-        return JsonSerializer.Deserialize<Invoice>(chatResponse.Text);
-    }
+    if (string.IsNullOrWhiteSpace(content))
+      return null;
+
+    return JsonSerializer.Deserialize<Invoice>(
+        content,
+        new JsonSerializerOptions
+        {
+          PropertyNameCaseInsensitive = true
+        }
+    );
+  }
 }
