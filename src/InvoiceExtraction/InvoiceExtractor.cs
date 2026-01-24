@@ -31,6 +31,11 @@ public class InvoiceExtractor : IInvoiceExtractor
   public async Task<Invoice?> ExtractInvoiceAsync(byte[] pdfContent)
   {
     string pdfText = await ExtractPdfText(pdfContent);
+    if (string.IsNullOrWhiteSpace(pdfText))
+    {
+      return null;
+    }
+
     var invoice = await ExtractInvoiceJson(pdfText);
     return invoice;
   }
@@ -43,14 +48,8 @@ public class InvoiceExtractor : IInvoiceExtractor
 
     File.WriteAllBytes(inputPdf, pdfContent);
 
-    var startInfo = new ProcessStartInfo
-    {
-      FileName = "ocrmypdf",
-      Arguments = $"-l pol --output-type pdf --optimize 0 --sidecar {outputText} {inputPdf} {outputPdf}",
-      UseShellExecute = false
-    };
-
-    Process.Start(startInfo)?.WaitForExit();
+    Process.Start("ocrmypdf", $"-l pol --output-type pdf --optimize 0 --force-ocr {inputPdf} {outputPdf}")?.WaitForExit();
+    Process.Start("pdftotext", $"-layout {outputPdf} {outputText}")?.WaitForExit();
 
     string pdfText = await File.ReadAllTextAsync(outputText);
 
@@ -73,7 +72,7 @@ public class InvoiceExtractor : IInvoiceExtractor
     http.Timeout = TimeSpan.FromMinutes(10);
 
     var schema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(typeof(Invoice));
-    var schemaString = JsonSerializer.Serialize(schema, new JsonSerializerOptions { WriteIndented = true });
+    var schemaString = JsonSerializer.Serialize(schema);
 
     var systemPrompt = $"""
 You are a data extractor working on OCR text from a Polish PDF invoice.
@@ -96,9 +95,8 @@ Do not invent data. If a field is missing, set its value to null.
     };
 
     var serializedRequest = JsonSerializer.Serialize(requestBody);
-    var prettyRequest = JsonSerializer.Serialize(requestBody, new JsonSerializerOptions { WriteIndented = true });
     Console.WriteLine("Sending request to Ollama...");
-    Console.WriteLine(prettyRequest);
+    Console.WriteLine(serializedRequest);
 
     var response = await http.PostAsync(
         "/api/chat",
@@ -113,10 +111,8 @@ Do not invent data. If a field is missing, set its value to null.
 
     var responseJson = await response.Content.ReadAsStringAsync();
 
-    var parsed = JsonDocument.Parse(responseJson);
-    var prettyResponse = JsonSerializer.Serialize(parsed.RootElement, new JsonSerializerOptions { WriteIndented = true });
     Console.WriteLine("Received response from Ollama:");
-    Console.WriteLine(prettyResponse);
+    Console.WriteLine(responseJson);
 
     using var doc = JsonDocument.Parse(responseJson);
 
